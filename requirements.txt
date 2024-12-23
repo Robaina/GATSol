@@ -1,0 +1,9 @@
+torch
+pandas
+bio
+scikit-learn
+transformers
+iFeatureOmegaCLI
+rdkit
+torch_geometric
+fair-esm
