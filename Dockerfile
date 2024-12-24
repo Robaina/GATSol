@@ -21,9 +21,9 @@ COPY . /app/
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create necessary directories if they don't exist
-RUN mkdir -p /app/Predict/NEED_to_PREPARE/fasta \
-    /app/Predict/NEED_to_PREPARE/pdb
+# # Create necessary directories if they don't exist
+# RUN mkdir -p /app/Predict/NEED_to_PREPARE/fasta \
+#     /app/Predict/NEED_to_PREPARE/pdb
 
 # Default command to run predictions
 ENTRYPOINT ["python", "entrypoint.py"]

@@ -134,15 +134,57 @@ def copy_pdb_files(pdb_dir: Path, target_dir: Path, sequence_ids: List[str]) -> 
         logger.debug(f"Copied PDB file: {pdb_path}")
 
 
-def process_input_files(tools_path: Path) -> None:
-    """Process PDB files to generate contact maps."""
-    script_path = tools_path / "pdb_to_cm" / "pdb_to_cm.sh"
+def process_pdb_to_cm(
+    pdb_path: Path, cm_path: Path, contact_threshold: float = 10.0
+) -> None:
+    """
+    Process a single PDB file to generate its contact map.
+
+    Args:
+        pdb_path: Path to input PDB file
+        cm_path: Path to output contact map file
+        contact_threshold: Distance threshold for contacts (default: 10.0 Angstroms)
+    """
     try:
-        subprocess.run(["bash", str(script_path)], check=True)
-        logger.info("Successfully processed PDB files to contact maps")
+        subprocess.run(
+            [
+                "python",
+                "/app/Predict/tools/pdb_to_cm/pdb_to_cm.py",
+                str(pdb_path),
+                str(cm_path),
+                "-t",
+                str(contact_threshold),
+            ],
+            check=True,
+        )
     except subprocess.CalledProcessError as e:
-        logger.error(f"Error processing PDB files: {e}")
+        logger.error(f"Error processing PDB file {pdb_path}: {e}")
         raise
+
+
+def process_input_files(base_dir: Path) -> None:
+    """
+    Process all PDB files to generate contact maps.
+
+    Args:
+        base_dir: Base directory containing pdb and cm subdirectories
+    """
+    pdb_dir = base_dir / "pdb"
+    cm_dir = base_dir / "cm"
+
+    # Ensure output directory exists
+    cm_dir.mkdir(exist_ok=True)
+
+    # Process each PDB file
+    pdb_files = list(pdb_dir.glob("*.pdb"))
+    for idx, pdb_file in enumerate(pdb_files, 1):
+        protein_id = pdb_file.stem  # filename without extension
+        cm_file = cm_dir / f"{protein_id}.cm"
+
+        logger.info(f"Processing PDB file {idx}/{len(pdb_files)}: {protein_id}")
+        process_pdb_to_cm(pdb_file, cm_file)
+
+    logger.info("Successfully processed all PDB files to contact maps")
 
 
 def extract_features(tools_path: Path) -> None:
@@ -231,8 +273,8 @@ def main(args: argparse.Namespace) -> None:
     sequences_df.to_csv(base_dir / "list.csv", index=False)
 
     # Process files
+    process_input_files(base_dir)
     tools_path = Path("/app/Predict/tools")
-    process_input_files(tools_path)
     extract_features(tools_path)
 
     # Setup model
