@@ -1,9 +1,11 @@
-torch
+torch==2.2.2
+torchvision
+torchaudio
 pandas
 bio
 scikit-learn
 transformers
 iFeatureOmegaCLI
 rdkit
-torch_geometric
+torch_geometric==2.3.0
 fair-esm

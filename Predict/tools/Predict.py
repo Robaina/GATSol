@@ -1,9 +1,11 @@
 import os
+from pathlib import Path
 import pandas as pd
 import torch
 import numpy as np
 from torch_geometric.data import Data
 import warnings
+
 warnings.filterwarnings("ignore")
 import pickle
 from tqdm import tqdm
@@ -14,12 +16,17 @@ import torch.optim as optim
 from torch_geometric.nn import GCNConv, global_mean_pool
 from torch_geometric.nn import GATConv
 import torch.nn.functional as F
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1' 
+
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
+BASE_DIR = Path(__file__).parent.parent / "NEED_to_PREPARE"
+
 
 def name_seq_dict(path):
     pdb_chain_list = pd.read_csv(path, header=0)
-    dict_pdb_chain = pdb_chain_list.set_index('id')['sequence'].to_dict()
+    dict_pdb_chain = pdb_chain_list.set_index("id")["sequence"].to_dict()
     return dict_pdb_chain
+
 
 # 定义图神经网络模型
 class GATClassifier(nn.Module):
@@ -28,9 +35,15 @@ class GATClassifier(nn.Module):
         self.convs = nn.ModuleList()
         for i in range(num_layers):
             if i == 0:
-                self.convs.append(GATConv(in_channels, hidden_channels, heads=num_heads))
+                self.convs.append(
+                    GATConv(in_channels, hidden_channels, heads=num_heads)
+                )
             else:
-                self.convs.append(GATConv(hidden_channels * num_heads, hidden_channels, heads=num_heads))
+                self.convs.append(
+                    GATConv(
+                        hidden_channels * num_heads, hidden_channels, heads=num_heads
+                    )
+                )
         self.lin1 = nn.Linear(hidden_channels * num_heads, 128)
         self.lin2 = nn.Linear(128, 1)
 
@@ -44,6 +57,7 @@ class GATClassifier(nn.Module):
         # x = self.lin1(x)
         return x.squeeze()
 
+
 def predictions(model, device, loader):
     model.eval()
     y_hat = torch.tensor([]).cuda()
@@ -54,42 +68,49 @@ def predictions(model, device, loader):
             output = model(data)
             if output.dim() == 0:
                 output = output.unsqueeze(0)
-            y_hat = torch.cat((y_hat, output),0) 
-            y_true = torch.cat((y_true, data.y),0)
+            y_hat = torch.cat((y_hat, output), 0)
+            y_true = torch.cat((y_true, data.y), 0)
     return y_hat, y_true
+
 
 def print_box(message):
     box_width = 40
     message = f" {message} "
     padding = (box_width - len(message)) // 2
-    border = '*' * box_width
-    padding_str = '*' + ' ' * padding
+    border = "*" * box_width
+    padding_str = "*" + " " * padding
 
     print(border)
-    print(padding_str + message + ' ' * (box_width - len(padding_str) - len(message)) + '*')
+    print(
+        padding_str
+        + message
+        + " " * (box_width - len(padding_str) - len(message))
+        + "*"
+    )
     print(border)
+
 
 # 在框框中间显示 "Prediction begin"
 print_box("Prediction Begin")
 
-pkl_path = "./NEED_to_PREPARE/pkl"
-name_dict = name_seq_dict("./NEED_to_PREPARE/list.csv")
+pkl_path = str(BASE_DIR / "pkl")
+name_dict = name_seq_dict(str(BASE_DIR / "list.csv"))
 file_names = list(name_dict.keys())
 
-test_dataset = [] # data数据对象的list集合
+test_dataset = []  # data数据对象的list集合
 
 for filename in file_names:
-  file_path = os.path.join(pkl_path, filename+".pkl")
-  with open(file_path, 'rb') as f:
-    data = pickle.load(f).to(torch.device('cuda'))
-  test_dataset.append(data)
+    file_path = os.path.join(pkl_path, filename + ".pkl")
+    with open(file_path, "rb") as f:
+        data = pickle.load(f).to(torch.device("cuda"))
+    test_dataset.append(data)
 
 
 batch_size = 1
-test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
 # 设置训练参数
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 in_channels = 1300  # 输入特征的维度
 hidden_channels = 1024  # 隐层特征的维度
 num_classes = 1  # 分类类别的数量
@@ -106,7 +127,7 @@ y_hat, y_true = predictions(model, device, test_loader)
 
 y_hat = list(y_hat.cpu().numpy())
 
-df = pd.read_csv("./NEED_to_PREPARE/list.csv")
+df = pd.read_csv(str(BASE_DIR / "list.csv"))
 
 df["Solubility_hat"] = y_hat
 

@@ -4,7 +4,7 @@ GATSol Protein Solubility Predictor
 
 This script serves as the main entry point for the GATSol protein solubility prediction pipeline.
 It handles the entire workflow from processing input files to generating predictions using
-a Graph Attention Network (GAT) model.
+a Graph Attention Network (GAT) model, supporting both CPU and GPU execution.
 """
 
 import argparse
@@ -15,21 +15,26 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.data import Data, DataLoader
+from torch_geometric.data import Data
+from torch_geometric.loader import DataLoader  # Updated import path
 from torch_geometric.nn import GATConv, global_mean_pool
-from tqdm import tqdm
+
+# Removed tqdm as it's not needed in container environment
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+TOOLS_PATH = Path("/app/Predict/tools")
+BASE_DIR = Path("/app/Predict/NEED_to_PREPARE")
 
 
 @dataclass
@@ -44,22 +49,40 @@ class ModelConfig:
     batch_size: int = 1
 
 
+def get_device(device_str: Optional[str] = None) -> torch.device:
+    """
+    Determine the appropriate device (CPU/GPU) to use.
+
+    Args:
+        device_str: Optional string specifying device ('cpu', 'cuda', or None)
+
+    Returns:
+        torch.device: The selected device
+    """
+    if device_str is not None:
+        if device_str not in ["cpu", "cuda"]:
+            raise ValueError("device must be either 'cpu' or 'cuda'")
+        if device_str == "cuda" and not torch.cuda.is_available():
+            logger.warning("CUDA requested but not available. Falling back to CPU.")
+            return torch.device("cpu")
+        return torch.device(device_str)
+
+    # Auto-detect device
+    if torch.cuda.is_available():
+        logger.info("CUDA GPU detected and will be used for computation")
+        return torch.device("cuda")
+    else:
+        logger.info("No CUDA GPU detected. Using CPU for computation")
+        return torch.device("cpu")
+
+
 class GATClassifier(nn.Module):
     """
     Graph Attention Network (GAT) for protein solubility prediction.
-
-    Args:
-        in_channels: Number of input features
-        hidden_channels: Number of hidden features
-        num_heads: Number of attention heads
-        num_layers: Number of GAT layers
     """
 
-    def __init__(
-        self, in_channels: int, hidden_channels: int, num_heads: int, num_layers: int
-    ) -> None:
-        super().__init__()
-
+    def __init__(self, in_channels, hidden_channels, num_heads, num_layers):
+        super(GATClassifier, self).__init__()
         self.convs = nn.ModuleList()
         for i in range(num_layers):
             if i == 0:
@@ -72,9 +95,17 @@ class GATClassifier(nn.Module):
                         hidden_channels * num_heads, hidden_channels, heads=num_heads
                     )
                 )
-
         self.lin1 = nn.Linear(hidden_channels * num_heads, 128)
         self.lin2 = nn.Linear(128, 1)
+
+    def forward(self, data):
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+        for conv in self.convs:
+            x = F.relu(conv(x, edge_index))
+        x = global_mean_pool(x, batch)
+        x = F.relu(self.lin1(x))
+        x = self.lin2(x)
+        return x.squeeze()
 
     def forward(self, data: Data) -> torch.Tensor:
         """Forward pass of the model."""
@@ -90,16 +121,12 @@ class GATClassifier(nn.Module):
         return x.squeeze()
 
 
-def setup_directories() -> Path:
+def setup_directories(BASE_DIR: Path) -> Path:
     """Create and return the base working directory structure."""
-    base_dir = Path("/app/Predict/NEED_to_PREPARE")
-
     # Create all required directories
     for subdir in ["fasta", "pdb", "cm", "pkl"]:
-        (base_dir / subdir).mkdir(parents=True, exist_ok=True)
-        logger.debug(f"Created directory: {base_dir / subdir}")
-
-    return base_dir
+        (BASE_DIR / subdir).mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Created directory: {BASE_DIR / subdir}")
 
 
 def write_fasta_files(sequences_df: pd.DataFrame, fasta_dir: Path) -> None:
@@ -149,7 +176,7 @@ def process_pdb_to_cm(
         subprocess.run(
             [
                 "python",
-                "/app/Predict/tools/pdb_to_cm/pdb_to_cm.py",
+                str(TOOLS_PATH / "pdb_to_cm/pdb_to_cm.py"),
                 str(pdb_path),
                 str(cm_path),
                 "-t",
@@ -162,15 +189,15 @@ def process_pdb_to_cm(
         raise
 
 
-def process_input_files(base_dir: Path) -> None:
+def process_input_files(BASE_DIR: Path) -> None:
     """
     Process all PDB files to generate contact maps.
 
     Args:
-        base_dir: Base directory containing pdb and cm subdirectories
+        BASE_DIR: Base directory containing pdb and cm subdirectories
     """
-    pdb_dir = base_dir / "pdb"
-    cm_dir = base_dir / "cm"
+    pdb_dir = BASE_DIR / "pdb"
+    cm_dir = BASE_DIR / "cm"
 
     # Ensure output directory exists
     cm_dir.mkdir(exist_ok=True)
@@ -213,17 +240,43 @@ def load_test_dataset(
         List of PyTorch Geometric Data objects
     """
     test_dataset = []
-    for filename in tqdm(file_names, desc="Loading test dataset"):
+    total_files = len(file_names)
+    for idx, filename in enumerate(file_names, 1):
+        logger.info(f"Loading dataset file {idx}/{total_files}: {filename}")
         file_path = pkl_path / f"{filename}.pkl"
         with open(file_path, "rb") as f:
             data = pickle.load(f).to(device)
         test_dataset.append(data)
+    logger.info("Dataset loading completed")
     return test_dataset
 
 
-def make_predictions(
-    model: nn.Module, device: torch.device, loader: DataLoader
-) -> torch.Tensor:
+def load_model(
+    model: nn.Module, model_path: Union[str, Path], device: torch.device
+) -> nn.Module:
+    """
+    Load model weights with proper device handling.
+
+    Args:
+        model: The model instance
+        model_path: Path to the model weights
+        device: Target device for the model
+
+    Returns:
+        The loaded model
+    """
+    if not Path(model_path).exists():
+        raise FileNotFoundError(f"Model weights not found at: {model_path}")
+
+    # Load the state dict with proper device mapping
+    state_dict = torch.load(model_path, map_location=device)
+    model.load_state_dict(state_dict)
+    model = model.to(device)
+
+    return model
+
+
+def make_predictions(model, device, loader):
     """
     Generate predictions using the trained model.
 
@@ -238,14 +291,18 @@ def make_predictions(
     model.eval()
     y_hat = torch.tensor([]).to(device)
 
+    total_batches = len(loader)
     with torch.no_grad():
-        for data in tqdm(loader, desc="Generating predictions"):
+        for idx, data in enumerate(loader, 1):
+            if idx % 10 == 0:  # Log every 10th batch
+                logger.info(f"Processing batch {idx}/{total_batches}")
             data = data.to(device)
             output = model(data)
             if output.dim() == 0:
                 output = output.unsqueeze(0)
             y_hat = torch.cat((y_hat, output), 0)
 
+    logger.info("Prediction generation completed")
     return y_hat
 
 
@@ -253,46 +310,43 @@ def main(args: argparse.Namespace) -> None:
     """Main execution function."""
     logger.info("Starting GATSol prediction pipeline")
 
+    # Setup device
+    device = get_device(args.device)
+
+    # Setup directories
+    setup_directories(BASE_DIR)
+
     # Read sequence data
     sequences_df = pd.read_csv(args.sequences)
+    shutil.copy2(args.sequences, BASE_DIR / "list.csv")
     if not {"id", "sequence"}.issubset(sequences_df.columns):
         raise ValueError("Sequences file must contain 'id' and 'sequence' columns")
 
-    # Setup directories
-    base_dir = setup_directories()
-
     # Generate FASTA files from sequences
-    write_fasta_files(sequences_df, base_dir / "fasta")
+    write_fasta_files(sequences_df, BASE_DIR / "fasta")
     logger.info("Generated FASTA files from sequences")
 
     # Copy PDB files
-    copy_pdb_files(Path(args.pdb_dir), base_dir / "pdb", sequences_df["id"].tolist())
+    copy_pdb_files(Path(args.pdb_dir), BASE_DIR / "pdb", sequences_df["id"].tolist())
     logger.info("Copied PDB files to working directory")
 
-    # Save sequences dataframe for later use
-    sequences_df.to_csv(base_dir / "list.csv", index=False)
-
     # Process files
-    process_input_files(base_dir)
-    tools_path = Path("/app/Predict/tools")
-    extract_features(tools_path)
+    process_input_files(BASE_DIR)
+    extract_features(TOOLS_PATH)
 
     # Setup model
     config = ModelConfig()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = GATClassifier(
         config.in_channels, config.hidden_channels, config.num_heads, config.num_layers
-    ).to(device)
+    )
 
-    # Load model weights
+    # Load model weights with proper device handling
     model_path = Path(args.model_dir) / "best_model.pt"
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model weights not found at: {model_path}")
-    model.load_state_dict(torch.load(model_path))
+    model = load_model(model, model_path, device)
 
     # Prepare dataset and make predictions
     test_dataset = load_test_dataset(
-        base_dir / "pkl", sequences_df["id"].tolist(), device
+        BASE_DIR / "pkl", sequences_df["id"].tolist(), device
     )
     test_loader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False)
     predictions = make_predictions(model, device, test_loader)
@@ -309,7 +363,7 @@ def main(args: argparse.Namespace) -> None:
     # Cleanup temporary directories
     if not args.keep_temp:
         for temp_dir in ["cm", "pkl"]:
-            temp_path = base_dir / temp_dir
+            temp_path = BASE_DIR / temp_dir
             if temp_path.exists():
                 shutil.rmtree(temp_path)
                 logger.debug(f"Cleaned up temporary directory: {temp_path}")
@@ -348,6 +402,13 @@ if __name__ == "__main__":
         default="/app/check_point/best_model",
         required=False,
         help="Directory containing model weights (best_model.pt)",
+    )
+
+    parser.add_argument(
+        "--device",
+        type=str,
+        choices=["cpu", "cuda"],
+        help="Device to use for computation (default: auto-detect)",
     )
 
     parser.add_argument(
