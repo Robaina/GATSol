@@ -9,7 +9,7 @@ a Graph Attention Network (GAT) model, supporting both CPU and GPU execution.
 
 import argparse
 import logging
-import os
+import sys
 import pickle
 import shutil
 import subprocess
@@ -35,6 +35,46 @@ logger = logging.getLogger(__name__)
 
 TOOLS_PATH = Path("/app/Predict/tools")
 BASE_DIR = Path("/app/Predict/NEED_to_PREPARE")
+
+
+def setup_model_weights(weights_dir=None):
+    """Set up ESM model weights from local directory if provided."""
+    if weights_dir is None:
+        return True
+
+    weights_path = Path(weights_dir)
+    if not weights_path.exists():
+        print(f"Warning: Weights directory {weights_dir} does not exist")
+        return False
+
+    cache_dir = Path("/root/.cache/torch/hub/checkpoints")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    weight_files = [
+        "esm1b_t33_650M_UR50S.pt",
+        "esm1b_t33_650M_UR50S-contact-regression.pt",
+    ]
+
+    success = True
+    for filename in weight_files:
+        src_file = weights_path / filename
+        dst_file = cache_dir / filename
+
+        if not src_file.exists():
+            print(f"Warning: ESM weight file {filename} not found in {weights_dir}")
+            success = False
+            continue
+
+        try:
+            import shutil
+
+            shutil.copy2(src_file, dst_file)
+            print(f"Copied {filename} to PyTorch cache")
+        except Exception as e:
+            print(f"Error copying {filename}: {str(e)}")
+            success = False
+
+    return success
 
 
 @dataclass
@@ -308,6 +348,12 @@ def make_predictions(model, device, loader):
 
 def main(args: argparse.Namespace) -> None:
     """Main execution function."""
+
+    # Set up model weights
+    if not setup_model_weights(args.esm_weights_dir):
+        print("Error: Model weights could not be set up. Exiting.")
+        sys.exit(1)
+
     logger.info("Starting GATSol prediction pipeline")
 
     # Setup device
@@ -341,7 +387,7 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # Load model weights with proper device handling
-    model_path = Path(args.model_dir) / "best_model.pt"
+    model_path = Path(args.gatsol_weights_dir) / "best_model.pt"
     model = load_model(model, model_path, device)
 
     # Prepare dataset and make predictions
@@ -397,11 +443,18 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--model-dir",
+        "--gatsol-weights-dir",
         type=str,
-        default="/app/check_point/best_model",
+        required=True,
+        help="Directory containing GATSol model weights (best_model.pt)",
+    )
+
+    parser.add_argument(
+        "--esm-weights-dir",
+        type=str,
+        default=None,
         required=False,
-        help="Directory containing model weights (best_model.pt)",
+        help="Directory containing ESM model weights (esm1b_t33_650M_UR50S.pt, esm1b_t33_650M_UR50S-contact-regression.pt)",
     )
 
     parser.add_argument(
