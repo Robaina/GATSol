@@ -1,3 +1,7 @@
+# :warning: Fork changes :warning: :
+
+* Created a Dockerfile and entry point to run tool as a docker container
+
 # GATSol
 
 GATSol, an enhanced predictor of protein solubility through the synergy of 3D structure graph and large language modeling
