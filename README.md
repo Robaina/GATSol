@@ -2,6 +2,11 @@
 
 * Created a Dockerfile and entry point to run tool as a docker container
 
+```
+cd GATSol
+docker build -t gatsol:latest .
+```
+
 # GATSol
 
 GATSol, an enhanced predictor of protein solubility through the synergy of 3D structure graph and large language modeling
