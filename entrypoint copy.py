@@ -22,8 +22,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Data
-from torch_geometric.loader import DataLoader
+from torch_geometric.loader import DataLoader  # Updated import path
 from torch_geometric.nn import GATConv, global_mean_pool
+
+# Removed tqdm as it's not needed in container environment
 
 # Configure logging
 logging.basicConfig(
@@ -33,69 +35,6 @@ logger = logging.getLogger(__name__)
 
 TOOLS_PATH = Path("/app/Predict/tools")
 BASE_DIR = Path("/app/Predict/NEED_to_PREPARE")
-
-
-def parse_fasta(fasta_path: Path) -> pd.DataFrame:
-    """
-    Parse a FASTA file into a DataFrame with 'id' and 'sequence' columns.
-
-    Args:
-        fasta_path: Path to the input FASTA file
-
-    Returns:
-        pd.DataFrame: DataFrame containing sequence IDs and sequences
-    """
-    sequences = []
-    current_id = None
-    current_seq = []
-
-    with open(fasta_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-
-            if line.startswith(">"):
-                if current_id is not None:
-                    sequences.append(
-                        {"id": current_id, "sequence": "".join(current_seq)}
-                    )
-                current_id = line[1:].split()[0]  # Take first word after '>' as ID
-                current_seq = []
-            else:
-                current_seq.append(line)
-
-    # Don't forget to add the last sequence
-    if current_id is not None:
-        sequences.append({"id": current_id, "sequence": "".join(current_seq)})
-
-    return pd.DataFrame(sequences)
-
-
-def load_input_sequences(input_path: Path) -> pd.DataFrame:
-    """
-    Load sequences from either a CSV file or a FASTA file.
-
-    Args:
-        input_path: Path to input file (either CSV or FASTA)
-
-    Returns:
-        pd.DataFrame: DataFrame containing sequence IDs and sequences
-    """
-    file_ext = input_path.suffix.lower()
-
-    if file_ext == ".csv":
-        df = pd.read_csv(input_path)
-        if not {"id", "sequence"}.issubset(df.columns):
-            raise ValueError("CSV file must contain 'id' and 'sequence' columns")
-    elif file_ext in [".fasta", ".fa", ".faa"]:
-        df = parse_fasta(input_path)
-    else:
-        raise ValueError(
-            f"Unsupported file format: {file_ext}. Please provide either a CSV or FASTA/FAA file."
-        )
-
-    return df
 
 
 def setup_model_weights(weights_dir=None):
@@ -409,6 +348,7 @@ def make_predictions(model, device, loader):
 
 def main(args: argparse.Namespace) -> None:
     """Main execution function."""
+
     # Set up model weights
     if not setup_model_weights(args.esm_weights_dir):
         print("Error: Model weights could not be set up. Exiting.")
@@ -422,11 +362,11 @@ def main(args: argparse.Namespace) -> None:
     # Setup directories
     setup_directories(BASE_DIR)
 
-    # Read sequence data - now supports both CSV and FASTA
-    sequences_df = load_input_sequences(Path(args.input))
-
-    # Save as CSV for compatibility with rest of pipeline
-    sequences_df.to_csv(BASE_DIR / "list.csv", index=False)
+    # Read sequence data
+    sequences_df = pd.read_csv(args.sequences)
+    shutil.copy2(args.sequences, BASE_DIR / "list.csv")
+    if not {"id", "sequence"}.issubset(sequences_df.columns):
+        raise ValueError("Sequences file must contain 'id' and 'sequence' columns")
 
     # Generate FASTA files from sequences
     write_fasta_files(sequences_df, BASE_DIR / "fasta")
@@ -482,10 +422,10 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--input",
+        "--sequences",
         type=str,
         required=True,
-        help="Path to input file (CSV with id,sequence columns or FASTA format)",
+        help="Path to CSV file containing sequence IDs and sequences (columns: id, sequence)",
     )
 
     parser.add_argument(
